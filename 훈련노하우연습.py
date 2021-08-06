@@ -1,0 +1,107 @@
+#테스트 세트로 모델을 튜닝
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split
+cancer=load_breast_cancer()
+x=cancer.data
+y=cancer.target
+x_train_all, x_test, y_train_all, y_test=train_test_split(x, y, stratify=y, test_size=0.2, random_state=42)
+
+from sklearn.linear_model import SGDClassifier
+sgd=SGDClassifier(loss='log', random_state=42, max_iter=100)
+sgd.fit(x_train_all, y_train_all)
+sgd.score(x_test, y_test)
+
+#sgd의 loss와 같은 매개변수는 알아서 학습되는게 아니라 사용자가 선택해야됨. 그럼 loss를 바꿔보자
+from sklearn.linear_model import SGDClassifier
+sgd=SGDClassifier(loss='hinge', random_state=42) #'hinge'는 훈련데이터의 클래스를 구분하는 경계선을 찾는 작업
+sgd.fit(x_train_all, y_train_all)
+sgd.score(x_test, y_test)
+
+#지금은 테스트 세트를 가지고 더 좋은 score를 내는 모델을 튜닝했음. 근데 이러면 테스트 세트에만 더 좋은 모델을 찾아서 실전에는 다를 수가 있음.
+#그래서 훈련 세트에서 조금 떼서 검증 세트로 하고 검증 세트로 모델을 튜징하며 테스트 세트는 실전에 투입되기 전에 딱 한번만 사용하는 것이 좋음.
+#훈련 세트 60 %, 검증 세트 20 %, 테스트 세트 20 % 가 좋은데 실제 분할 작업은 훈련:테스트=8:2로 나누고 나서 다시 훈련을 훈련:검증=8:2로 나눔.
+x_train, x_val, y_train, y_val = train_test_split(x_train_all, y_train_all, stratify=y_train_all, test_size=0.2, random_state=42)
+sgd=SGDClassifier(loss='log', random_state=42)
+sgd.fit(x_train,y_train)
+sgd.score(x_val,y_val)
+
+
+#데이터 전처리와 특성의 스케일
+import matplotlib.pyplot as plt
+print(cancer.feature_names[[2,3]]) #특성 이름을 보면 'mean perimeter'랑 'mean area'인데 그래프로 보면
+plt.boxplot(x_train[:, 2:4])
+plt.xlabel('feature')
+plt.ylabel('value')
+plt.show() #두 특성의 스케일 차이가 큼. perimeter는 100~200 사이에 다 있는데 area는 200~2,000 사이에 있음.
+
+#스케일 조정 중 가장 많이 쓰이는 것은 표준화: (특성값 - 평균) / 표준편차
+import numpy as np
+
+train_mean = np.mean(x_train,axis=0)
+train_std = np.std(x_train,axis=0)
+x_train_scaled = (x_train-train_mean)/train_std #훈련세트 표준화
+val_mean = np.mean(x_val,axis=0)
+val_std = np.std(x_val,axis=0)
+x_val_scaled = (x_val-val_mean)/val_std #검증세트도 표준화하는데 이렇게 하면 (거리)스케일은 줄어드나 훈련세트와 검증세트의 (거리)비율이 달라짐
+sgd.fit(x_train_scaled,y_train)
+sgd.score(x_val_scaled,y_val)
+x_val_scaled = (x_val-train_mean)/train_std #그래서 훈련세트의 평균과 표준편차로 표준화해야함.
+sgd.fit(x_train_scaled,y_train)
+sgd.score(x_val_scaled,y_val)
+
+train_score=[]
+val_score=[]
+classes = np.unique(y_train)
+
+for _ in range(0,100):
+  sgd.partial_fit(x_train_scaled, y_train, classes=classes)
+  train_score.append(sgd.score(x_train_scaled, y_train))
+  val_score.append(sgd.score(x_val_scaled, y_val))
+
+import matplotlib.pyplot as plt
+plt.plot(train_score)
+plt.plot(val_score)
+plt.xlabel('epoch')
+plt.ylabel('accuracy')
+plt.legend(['train_score', 'val_score'])
+plt.show()
+
+sgd.fit(x_train_scaled,y_train)
+sgd.score(x_val_scaled,y_val)
+
+
+#교차검증 - 훈련 세트를 k개의 폴드로 나누어서 1개의 폴드를 검증에 사용, k-1 개의 폴드를 훈련에 사용하며 검증에 사용하는 폴드를 바꿔가며 반복함.
+validation_scores=[] #각 폴드의 검증 점수를 저장하기 위한 리스트임.
+k=10
+bins = len(x_train)//k #한 폴드에 들어가는 샘플의 개수는 전체 훈련 세트의 샘플 개수를 k로 나눈 것. bins에 넣어서 이 숫자만큼 건너뛰며 훈련시키면 됨.
+for i in range(k):
+  start = i*bins
+  end = (i+1)*bins
+  val_fold = x_train_all[start:end]
+  val_target = y_train_all[start:end]
+
+  train_index = list(range(0,start))+list(range(end,len(x_train))) #list함수를 활용하여 0에서 start까지 + end에서 x_train의 끝까지의 인덱스를 전부 모아놓음
+  train_fold = x_train_all[train_index]
+  train_target = y_train_all[train_index]
+
+  train_mean = np.mean(train_fold, axis=0)
+  train_std = np.std(train_fold, axis=0)
+  train_fold_scaled = (train_fold - train_mean)/train_std
+  val_fold_scaled = (val_fold - train_mean)/train_std
+
+  sgd.fit(train_fold_scaled, train_target)
+  score = sgd.score(val_fold_scaled, val_target)
+  validation_scores.append(score)
+
+print(np.mean(validation_scores))
+
+#사이킷런으로 교차검증 하는 법 (+표준화 하는 법)
+from sklearn.model_selection import cross_validate
+sgd=SGDClassifier(loss='log', penalty='l2', alpha=0.001, random_state= 42)
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+pipe = make_pipeline(StandardScaler(), sgd) #파이프라인객체 만드는건데 이 안에 표준화 전처리(평균, 표준편차 구하는거 + 표준화)와 모델(sgd)를 넣음.
+#그럼 이제 표준화 전처리와 모델이 하나로 연결됨.
+scores = cross_validate(pipe, x_train_all, y_train_all, cv=10, return_train_score=True) #cross_validate()는 모델의 교차검증을 수행함. cv는 폴드의 수, return_train_score=True해놓으면 훈련스코어도 알 수 있음.
+print(np.mean(scores['test_score']))
+print(np.mean(scores['train_score']))
